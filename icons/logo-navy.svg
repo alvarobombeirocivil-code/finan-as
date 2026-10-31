@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="50 25 560 245" role="img" aria-label="AVR Auditoria &amp; Assessoria">
+  <g fill="#1b3350">
+    <rect x="68" y="150" width="30" height="38"/>
+    <rect x="110" y="128" width="30" height="60"/>
+    <rect x="152" y="98" width="30" height="90"/>
+    <path d="M66 116 L101 151 L190 62" fill="none" stroke="#1b3350" stroke-width="16"/>
+    <polygon points="216,36 174,46 206,78"/>
+    <text x="198" y="188" font-family="Georgia, 'Times New Roman', 'Noto Serif', serif" font-weight="700" font-size="152">AVR</text>
+    <text x="325" y="257" text-anchor="middle" textLength="550" lengthAdjust="spacingAndGlyphs" font-family="Georgia, 'Times New Roman', 'Noto Serif', serif" font-weight="700" font-size="37">AUDITORIA &amp; ASSESSORIA</text>
+  </g>
+</svg>

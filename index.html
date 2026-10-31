@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#050608">
+  <meta name="color-scheme" content="dark light">
+  <script>try { if (localStorage.getItem('avr-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (e) {}</script>
+  <meta name="description" content="Controle financeiro pessoal e contas a pagar">
+  <title>AVR Finanças</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <main id="view"></main>
+    <button id="fab" class="fab" aria-label="Novo lançamento"></button>
+    <nav id="tabbar" class="tabbar" aria-label="Navegação principal"></nav>
+  </div>
+  <div id="sheets"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="lock" class="lock hidden"></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
