@@ -14,7 +14,13 @@ const TABS = [
   { id: 'lanc', label: 'Lançamentos', icon: 'swap' },
   { id: 'contas', label: 'Contas', icon: 'wallet' },
 ];
-const ACCOUNT_KINDS = { corrente: 'Conta corrente', poupanca: 'Poupança', carteira: 'Carteira', investimento: 'Investimento', outro: 'Outro' };
+const CONTACT = {
+  name: 'Alvaro Henrique',
+  phone: '(11) 94583-5215',
+  whatsapp: 'https://wa.me/5511945835215',
+  tel: 'tel:+5511945835215',
+};
+const ACCOUNT_KINDS ={ corrente: 'Conta corrente', poupanca: 'Poupança', carteira: 'Carteira', investimento: 'Investimento', outro: 'Outro' };
 
 // ================= Inicialização =================
 async function boot() {
@@ -73,7 +79,7 @@ function route() {
 }
 
 function render() {
-  $('#view').innerHTML = VIEWS[ui.tab]();
+  $('#view').innerHTML = VIEWS[ui.tab]() + footer();
   document.querySelectorAll('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === ui.tab));
   $('#fab').classList.toggle('hidden', ui.tab === 'config');
   if (lastTab !== ui.tab) { window.scrollTo(0, 0); lastTab = ui.tab; }
@@ -102,15 +108,16 @@ function setTheme(theme) {
   if (theme === 'light') document.documentElement.dataset.theme = 'light';
   else delete document.documentElement.dataset.theme;
   try { localStorage.setItem('avr-theme', theme); } catch {}
-  $('meta[name=theme-color]').content = theme === 'light' ? '#f2f4f8' : '#050608';
+  $('meta[name=theme-color]').content = theme === 'light' ? '#f3ebdd' : '#050608';
 }
 const themeBtn = () => `
   <button class="icon-btn theme-btn" data-act="theme" aria-label="${isLight() ? 'Usar tema escuro' : 'Usar tema claro'}">${icon(isLight() ? 'moon' : 'sun')}</button>`;
 const logo = () => `
   <img class="logo-dark" src="icons/logo.svg" alt="AVR Auditoria &amp; Assessoria">
-  <img class="logo-light" src="icons/logo-navy.svg" alt="AVR Auditoria &amp; Assessoria">`;
+  <img class="logo-light" src="icons/logo-brown.svg" alt="AVR Auditoria &amp; Assessoria">`;
 
 const header = (title, sub = '') => `
+  <div class="brand">${logo()}</div>
   <header class="top">
     <div><p class="eyebrow">${sub}</p><h1>${title}</h1></div>
     <div class="top-actions">
@@ -128,6 +135,31 @@ const monthNav = () => `
 
 const seg = (key, opts) => `
   <div class="seg">${opts.map(([v, l]) => `<button class="${ui[key] === v ? 'on' : ''}" data-act="filter" data-key="${key}" data-val="${v}">${l}</button>`).join('')}</div>`;
+
+// ---------- Rodapé e contato do desenvolvedor ----------
+const footer = () => `
+  <footer class="app-footer">
+    <p>Desenvolvido por <b>${CONTACT.name}</b> · ${CONTACT.phone}</p>
+    <button class="link-btn" data-act="contact">${icon('chat')}Entre em contato</button>
+  </footer>`;
+
+const contactCard = () => `
+  <div class="contact">
+    <p class="contact-name">${CONTACT.name}</p>
+    <p class="contact-phone">${CONTACT.phone}</p>
+    <div class="btn-col">
+      <a class="btn whats" href="${CONTACT.whatsapp}" target="_blank" rel="noopener">${icon('chat')}Conversar no WhatsApp</a>
+      <a class="btn ghost" href="${CONTACT.tel}">${icon('phone')}Ligar</a>
+    </div>
+    <figure class="qr">
+      <img src="icons/whatsapp-qr.png" alt="QR Code do WhatsApp de ${CONTACT.name}" onerror="this.closest('figure').remove()">
+      <figcaption>Aponte a câmera para abrir o WhatsApp</figcaption>
+    </figure>
+  </div>`;
+
+function openContact() {
+  openSheet(`${sheetHead('Entre em contato')}<p class="muted contact-intro">Dúvidas, sugestões ou suporte do app:</p>${contactCard()}`);
+}
 
 const emptyState = (ic, text) => `<div class="empty">${icon(ic)}<p>${text}</p></div>`;
 const sumOf = (items) => items.reduce((s, p) => s + p.amount, 0);
@@ -208,7 +240,6 @@ function viewInicio() {
   const backupDue = hasData && (!d.settings.lastBackup || diffDays(today, d.settings.lastBackup) > 30);
 
   return `
-    <div class="brand">${logo()}</div>
     ${header('Visão geral', greeting())}
     ${monthNav()}
     <section class="hero">
@@ -374,6 +405,10 @@ function viewConfig() {
         <button class="btn ghost" data-act="import">${icon('upload')}Restaurar backup</button>
       </div>
       <input type="file" id="import-file" accept=".json,.txt,application/json,text/plain" hidden>
+    </section>
+    <section class="card-sec">
+      <h2>${icon('chat')}Entre em contato</h2>
+      ${contactCard()}
     </section>
     <section class="card-sec danger-sec">
       <h2>${icon('alert')}Zona de perigo</h2>
@@ -1184,6 +1219,7 @@ async function importBackup(file) {
 const ACTIONS = {
   goto: (ds) => { location.hash = ds.tab; },
   theme: () => { setTheme(isLight() ? 'dark' : 'light'); render(); },
+  contact: () => openContact(),
   fab: () => openEntryForm({ type: 'bill' }),
   month: (ds) => { ui.month = addMonthsKey(ui.month, +ds.d); render(); },
   'month-today': () => { ui.month = monthKey(todayStr()); render(); },

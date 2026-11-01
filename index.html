@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="theme-color" content="#050608">
   <meta name="color-scheme" content="dark light">
-  <script>try { if (localStorage.getItem('avr-theme') === 'light') document.documentElement.dataset.theme = 'light'; } catch (e) {}</script>
+  <script>try { if (localStorage.getItem('avr-theme') === 'light') { document.documentElement.dataset.theme = 'light'; document.querySelector('meta[name=theme-color]').content = '#f3ebdd'; } } catch (e) {}</script>
   <meta name="description" content="Controle financeiro pessoal e contas a pagar">
   <title>AVR Finanças</title>
   <link rel="manifest" href="manifest.webmanifest">
