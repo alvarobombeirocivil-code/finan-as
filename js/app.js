@@ -2,7 +2,7 @@
 import * as S from './store.js';
 import {
   todayStr, monthKey, addMonthsKey, monthLabel, monthShort, money, fmtDate, fmtShort, fmtDayLong,
-  diffDays, esc, safeColor, range,
+  diffDays, esc, safeColor, range, dateInMonth, MONTHS,
 } from './util.js';
 import { icon } from './icons.js';
 
@@ -12,6 +12,7 @@ const TABS = [
   { id: 'inicio', label: 'Início', icon: 'home' },
   { id: 'pagar', label: 'Pagar', icon: 'bill' },
   { id: 'lanc', label: 'Lançamentos', icon: 'swap' },
+  { id: 'rel', label: 'Relatórios', icon: 'chart' },
   { id: 'contas', label: 'Contas', icon: 'wallet' },
 ];
 const CONTACT = {
@@ -74,7 +75,7 @@ function registerSW() {
 let lastTab;
 function route() {
   const tab = location.hash.slice(1) || 'inicio';
-  ui.tab = ['inicio', 'pagar', 'lanc', 'contas', 'config'].includes(tab) ? tab : 'inicio';
+  ui.tab = ['inicio', 'pagar', 'lanc', 'rel', 'contas', 'config'].includes(tab) ? tab : 'inicio';
   render();
 }
 
@@ -205,7 +206,8 @@ function txRow(t) {
   const src = t.cardId ? S.byId('cards', t.cardId)?.name : t.accountId ? S.byId('accounts', t.accountId)?.name : '';
   const sub = isF
     ? ['Pagamento de fatura', src && esc(src)].filter(Boolean).join(' · ')
-    : [cat ? esc(cat.name) : 'Sem categoria', src && esc(src), t.installment && `${t.installment.n}/${t.installment.total}`].filter(Boolean).join(' · ');
+    : [t.date > todayStr() && 'Previsto', cat ? esc(cat.name) : 'Sem categoria', src && esc(src),
+      t.installment && `${t.installment.n}/${t.installment.total}`, t.seriesId && 'Mensal'].filter(Boolean).join(' · ');
   const sign = t.type === 'receita' ? '+' : isF ? '' : '−';
   const cls = t.type === 'receita' ? 't-in' : isF ? 't-muted' : 't-out';
   const ic = isF || t.cardId ? 'card' : t.type === 'receita' ? 'up' : 'down';
@@ -224,7 +226,10 @@ const payBlock = (title, items, ic, tone) => !items.length ? '' : `
   </section>`;
 
 // ================= Telas =================
-const VIEWS = { inicio: viewInicio, pagar: viewPagar, lanc: viewLanc, contas: viewContas, config: viewConfig };
+const VIEWS = { inicio: viewInicio, pagar: viewPagar, lanc: viewLanc, rel: viewRel, contas: viewContas, config: viewConfig };
+const monthYear = (key) => `${monthShort(key)}/${key.slice(2, 4)}`;
+const monthName = (key) => MONTHS[+key.slice(5, 7) - 1].toLowerCase();
+const endOfMonth = (key) => dateInMonth(key, 31);
 
 function viewInicio() {
   const d = S.D(), today = todayStr();
@@ -238,6 +243,15 @@ function viewInicio() {
   const inMonth = all.filter((p) => monthKey(p.due) === ui.month);
   const hasData = d.bills.length + d.txs.length > 0;
   const backupDue = hasData && (!d.settings.lastBackup || diffDays(today, d.settings.lastBackup) > 30);
+  const fc = hasData && ui.month >= monthKey(today) ? S.forecast(endOfMonth(ui.month)) : null;
+  const forecastHtml = !fc ? '' : `
+    <div class="forecast">
+      <div>
+        <small>Previsto para o fim de ${monthName(ui.month)}</small>
+        <span>${fc.pagar ? `− ${money(fc.pagar)} a pagar` : 'Nada pendente'}${fc.receber ? ` · + ${money(fc.receber)} a receber` : ''}</span>
+      </div>
+      <b class="${fc.saldo < 0 ? 'neg' : ''}">${money(fc.saldo)}</b>
+    </div>`;
 
   return `
     ${header('Visão geral', greeting())}
@@ -249,7 +263,9 @@ function viewInicio() {
         <div><span class="pill in">${icon('up')}</span><div><small>Receitas</small><b>${money(sum.receitas)}</b></div></div>
         <div><span class="pill out">${icon('down')}</span><div><small>Despesas</small><b>${money(sum.despesas)}</b></div></div>
       </div>
+      ${forecastHtml}
     </section>
+    ${limitAlerts(ui.month)}
     ${onboardingCard()}
     ${backupDue ? `<button class="banner" data-act="goto" data-tab="config">${icon('download')}<span>Faz tempo que você não faz backup. Toque para exportar.</span></button>` : ''}
     <div class="stats">
@@ -260,6 +276,73 @@ function viewInicio() {
     ${payBlock('Vencem hoje', dueToday, 'clock', 'warn')}
     ${payBlock('Próximos 7 dias', soon, 'clock', '')}
     ${!overdue.length && !dueToday.length && !soon.length && hasData ? emptyState('party', 'Nenhuma conta pendente nos próximos 7 dias.') : ''}`;
+}
+
+// Avisos de limite de gasto por categoria (passou do limite / acima de 80%).
+function limitAlerts(key) {
+  const spent = S.spendingByCategory(key);
+  const withLimit = S.D().categories.filter((c) => c.type === 'despesa' && c.limit > 0);
+  const over = withLimit.filter((c) => (spent.get(c.id) || 0) > c.limit);
+  const near = withLimit.filter((c) => { const v = spent.get(c.id) || 0; return v <= c.limit && v >= c.limit * 0.8; });
+  return [
+    ...over.map((c) => `<button class="alert-limit" data-act="goto" data-tab="rel">${icon('alert')}<span><b>${esc(c.name)}</b> passou do limite: ${money(spent.get(c.id))} de ${money(c.limit)}</span></button>`),
+    near.length ? `<button class="alert-limit warn" data-act="goto" data-tab="rel">${icon('clock')}<span>Perto do limite: ${near.map((c) => `<b>${esc(c.name)}</b> (${Math.round((spent.get(c.id) / c.limit) * 100)}%)`).join(', ')}</span></button>` : '',
+  ].join('');
+}
+
+// ================= Relatórios =================
+function viewRel() {
+  const d = S.D(), key = ui.month, prevKey = addMonthsKey(key, -1);
+  const spent = S.spendingByCategory(key), prev = S.spendingByCategory(prevKey);
+  const total = [...spent.values()].reduce((s, v) => s + v, 0);
+  const rows = [...spent.entries()].map(([id, v]) => ({ id, cat: S.byId('categories', id), v, prev: prev.get(id) || 0 }));
+  for (const c of d.categories) if (c.type === 'despesa' && c.limit > 0 && !spent.has(c.id)) rows.push({ id: c.id, cat: c, v: 0, prev: prev.get(c.id) || 0 });
+  rows.sort((a, b) => b.v - a.v);
+  const max = Math.max(1, ...rows.map((r) => Math.max(r.v, r.cat?.limit || 0)));
+  const catBars = rows.map((r) => {
+    const limit = r.cat?.limit || 0, over = limit && r.v > limit;
+    const delta = r.prev ? Math.round(((r.v - r.prev) / r.prev) * 100) : null;
+    const note = [
+      limit ? `Limite ${money(limit)} · ${over ? `passou ${money(r.v - limit)}` : `resta ${money(limit - r.v)}`}` : 'Sem limite',
+      delta !== null ? `${delta >= 0 ? '↑' : '↓'} ${Math.abs(delta)}% vs ${monthShort(prevKey)}` : r.v ? `sem gastos em ${monthShort(prevKey)}` : '',
+    ].filter(Boolean).join(' · ');
+    return `
+      <div class="hbar ${over ? 'over' : ''}" ${r.cat ? `role="button" tabindex="0" data-act="open-cat" data-id="${r.cat.id}"` : ''}>
+        <span class="lbl"><i style="background:${safeColor(r.cat?.color)}"></i>${r.cat ? esc(r.cat.name) : 'Sem categoria'}</span>
+        <span class="val">${money(r.v)}<small>${total ? Math.round((r.v / total) * 100) : 0}%</small></span>
+        <span class="track"><span class="fill" style="width:${(r.v / max) * 100}%"></span>${limit ? `<span class="limit" style="left:calc(${(limit / max) * 100}% - 1px)"></span>` : ''}</span>
+        <span class="note">${over ? `${icon('alert')} ` : ''}${note}</span>
+      </div>`;
+  }).join('');
+  const months = range(0, 5).map((i) => addMonthsKey(key, i - 5));
+  const sums = months.map((k) => ({ k, ...S.monthSummary(k) }));
+  const top = Math.max(1, ...sums.map((s) => Math.max(s.receitas, s.despesas)));
+  const cols = sums.map((s) => `
+    <button class="m ${s.k === key ? 'cur' : ''}" data-act="bar-tip" data-tip="${monthLabel(s.k)}: receitas ${money(s.receitas)} · despesas ${money(s.despesas)}" aria-label="${monthLabel(s.k)}: receitas ${money(s.receitas)}, despesas ${money(s.despesas)}">
+      <span class="b in" style="height:${(s.receitas / top) * 100}%"></span><span class="b out" style="height:${(s.despesas / top) * 100}%"></span>
+    </button>`).join('');
+  return `
+    ${header('Relatórios', 'Para onde foi o dinheiro')}
+    ${monthNav()}
+    <div class="chart-card">
+      <h3>Despesas por categoria</h3>
+      <p class="sub">${monthLabel(key)} · ${money(total)} no total · toque numa categoria para definir o limite</p>
+      ${catBars || emptyState('chart', 'Nenhuma despesa neste mês.')}
+    </div>
+    <div class="chart-card">
+      <h3>Receitas x despesas</h3>
+      <p class="sub">Últimos 6 meses · toque num mês para ver os valores</p>
+      <div class="cols">${cols}</div>
+      <div class="cols-l">${months.map((k) => `<span>${monthShort(k)}</span>`).join('')}</div>
+      <div class="legend"><span><i class="in"></i>Receitas</span><span><i class="out"></i>Despesas</span></div>
+      <details class="table-view">
+        <summary>Ver tabela</summary>
+        <table>
+          <thead><tr><th>Mês</th><th>Receitas</th><th>Despesas</th><th>Resultado</th></tr></thead>
+          <tbody>${sums.map((s) => `<tr><td>${monthYear(s.k)}</td><td>${money(s.receitas)}</td><td>${money(s.despesas)}</td><td class="${s.saldo < 0 ? 't-out' : ''}">${money(s.saldo)}</td></tr>`).join('')}</tbody>
+        </table>
+      </details>
+    </div>`;
 }
 
 function onboardingCard() {
@@ -394,6 +477,28 @@ function viewConfig() {
         <button class="btn ghost" data-act="set-pin">${d.settings.pin ? 'Alterar PIN' : 'Definir PIN'}</button>
         ${d.settings.pin ? '<button class="btn ghost" data-act="remove-pin">Remover PIN</button>' : ''}
       </div>
+      ${d.settings.pin ? `
+        <div class="bio-row">
+          <p>${d.settings.bio ? 'Digital ativada: o app pede a digital ao abrir, com o PIN como alternativa.' : 'Use a digital do celular para desbloquear mais rápido.'}</p>
+          <button class="btn ${d.settings.bio ? 'ghost' : 'primary'}" data-act="${d.settings.bio ? 'bio-off' : 'bio-on'}">${icon('finger')}${d.settings.bio ? 'Desativar digital' : 'Ativar digital'}</button>
+        </div>` : '<p class="hint-muted">Defina um PIN para poder ativar o desbloqueio por digital.</p>'}
+    </section>
+    <section class="card-sec">
+      <h2>${icon('download')}Exportar planilha</h2>
+      <p>Arquivo CSV que abre no Excel e no Google Planilhas.</p>
+      <div class="grid2 mb">
+        <label class="field"><span>De</span><input type="month" id="exp-from" value="${monthKey(todayStr())}"></label>
+        <label class="field"><span>Até</span><input type="month" id="exp-to" value="${monthKey(todayStr())}"></label>
+      </div>
+      <div class="btn-col">
+        <button class="btn primary" data-act="export-csv" data-kind="lanc">${icon('swap')}Lançamentos (Excel)</button>
+        <button class="btn ghost" data-act="export-csv" data-kind="pagar">${icon('bill')}Contas a pagar (Excel)</button>
+      </div>
+    </section>
+    <section class="card-sec">
+      <h2>${icon('calendar')}Lembretes de vencimento</h2>
+      <p>Gera um arquivo de agenda com as contas e faturas pendentes dos próximos 3 meses, com aviso 1 dia antes. No Android, abra o arquivo com o app de agenda. No Google Agenda, importe pelo computador em calendar.google.com → Configurações → Importar.<br>Dica: em cada conta também há o botão <b>Lembrar no Google Agenda</b>.</p>
+      <button class="btn ghost w100" data-act="export-ics">${icon('calendar')}Gerar arquivo de lembretes</button>
     </section>
     <section class="card-sec">
       <h2>${icon('download')}Backup</h2>
@@ -414,7 +519,7 @@ function viewConfig() {
       <h2>${icon('alert')}Zona de perigo</h2>
       <button class="btn danger" data-act="wipe">${icon('trash')}Apagar todos os dados</button>
     </section>
-    <p class="ver">Finanças v1.0 · dados salvos apenas neste aparelho</p>`;
+    <p class="ver">AVR Finanças v1.4 · dados salvos apenas neste aparelho</p>`;
 }
 
 // ================= Bottom sheets (janelas que sobem de baixo) =================
@@ -596,21 +701,30 @@ function entryHtml({ type, edit }) {
       <datalist id="dl-desc">${descs.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
       <div class="grid2">
         <label class="field"><span class="amount-label">Valor</span><input name="amount" class="money" inputmode="numeric" enterkeyhint="done"></label>
-        <label class="field"><span>${isBill ? 'Vencimento' : 'Data'}</span><input name="date" type="date"></label>
+        <label class="field"><span>${isBill ? 'Vencimento' : type === 'despesa' ? 'Data da compra' : 'Data'}</span><input name="date" type="date"></label>
       </div>
+      ${!isBill ? `
+        <label class="field"><span>${type === 'receita' ? 'Recebido em' : 'Pago com'}</span><select name="source">${sourceOptions(type === 'despesa')}</select></label>
+        ${type === 'despesa' ? `
+          <label class="field parcels-field hidden"><span>Parcelas</span><select name="parcels">${range(1, 24).map((n) => `<option value="${n}">${n === 1 ? 'À vista' : `${n}x`}</option>`).join('')}</select></label>
+          <div class="parc-prev hidden" data-parc></div>` : ''}
+        ${!edit ? `
+          <label class="toggle-row repeat-row"><span>${icon('repeat')}Repetir todo mês</span><input type="checkbox" name="repeat" class="sw" role="switch"></label>
+          <label class="field repeat-end hidden"><span>Até (opcional)</span><input type="month" name="repeatEnd"><small>Deixe em branco para repetir sem data de término.</small></label>` : ''}
+        ${edit?.seriesId ? `
+          <label class="check"><input type="checkbox" name="applyFuture" checked><span>Aplicar também aos próximos meses</span></label>
+          <label class="field"><span>Repete até (opcional)</span><input type="month" name="repeatEnd"></label>` : ''}` : ''}
       <p class="hint hidden" data-hint></p>
       <details class="more"${edit ? ' open' : ''}>
         <summary>Mais opções</summary>
         <label class="field"><span>Categoria</span><select name="categoryId">${catOptions(type === 'receita' ? 'receita' : 'despesa')}</select></label>
         ${isBill ? `<label class="field"><span>Pagar com (sugestão ao pagar)</span><select name="source">${sourceOptions(true)}</select></label>` : ''}
-        ${type === 'despesa' ? `
-          <label class="field"><span>Pago com</span><select name="source">${sourceOptions(true)}</select></label>
-          <label class="field parcels-field hidden"><span>Parcelas no cartão</span><select name="parcels">${range(1, 24).map((n) => `<option value="${n}">${n === 1 ? 'À vista' : `${n}x`}</option>`).join('')}</select><small>Informe o valor total da compra; ele é dividido entre as faturas.</small></label>` : ''}
-        ${type === 'receita' ? `<label class="field"><span>Recebido em</span><select name="source">${sourceOptions(false)}</select></label>` : ''}
         ${isBill && !edit ? `
           <label class="field"><span>Repetição</span><select name="mode"><option value="none">Não repete</option><option value="mensal">Todo mês</option><option value="parcelada">Parcelada</option></select></label>
-          <label class="field bill-parcels hidden"><span>Quantidade de parcelas</span><input name="billParcels" type="number" inputmode="numeric" min="2" max="120" value="2"><small>O valor informado é o de cada parcela.</small></label>` : ''}
+          <label class="field bill-parcels hidden"><span>Quantidade de parcelas</span><input name="billParcels" type="number" inputmode="numeric" min="2" max="120" value="2"><small>O valor informado é o de cada parcela.</small></label>
+          <label class="field bill-end hidden"><span>Até (opcional)</span><input type="month" name="billEnd"><small>Deixe em branco para repetir sem data de término.</small></label>` : ''}
         ${isBill && edit?.seriesId ? `<label class="check"><input type="checkbox" name="applyFuture" checked><span>Aplicar também às próximas ${edit.recur === 'mensal' ? 'ocorrências' : 'parcelas'} não pagas</span></label>` : ''}
+        ${isBill && edit?.recur === 'mensal' ? '<label class="field"><span>Repete até (opcional)</span><input type="month" name="billEnd"></label>' : ''}
         <label class="field"><span>Observação</span><input name="notes" maxlength="200"></label>
       </details>
       <div class="btn-col">
@@ -633,11 +747,13 @@ function fillEntry(form, st, keep) {
       setMoney(el.amount, x.amount);
       el.date.value = x.due;
       el.source.value = x.payWith || '';
+      if (el.billEnd) el.billEnd.value = d.series[x.seriesId]?.end || '';
     } else {
       setMoney(el.amount, x.groupId ? x.totalAmount : x.amount);
       el.date.value = x.groupId ? x.purchaseDate : x.date;
       el.source.value = x.cardId ? `c:${x.cardId}` : x.accountId ? `a:${x.accountId}` : '';
       if (x.groupId) el.parcels.value = String(x.installment.total);
+      if (x.seriesId && el.repeatEnd) el.repeatEnd.value = d.txSeries[x.seriesId]?.end || '';
     }
     return;
   }
@@ -656,15 +772,38 @@ function wireEntry(form, st, draw) {
   }));
   const parcelsField = $('.parcels-field', form);
   const amountLabel = $('.amount-label', form);
+  const preview = $('[data-parc]', form);
+  const repeatRow = $('.repeat-row', form);
+  // Mostra parcelas só para cartão; resume em quais faturas a compra cai.
   const syncParcels = () => {
-    const onCard = (el.source?.value || '').startsWith('c:');
-    parcelsField?.classList.toggle('hidden', !onCard);
-    if (parcelsField) amountLabel.textContent = onCard && +el.parcels.value > 1 ? 'Valor total' : 'Valor';
+    const src = el.source?.value || '';
+    const onCard = st.type === 'despesa' && src.startsWith('c:');
+    const repeating = !!el.repeat?.checked || !!st.edit?.seriesId;
+    parcelsField?.classList.toggle('hidden', !onCard || repeating);
+    const n = onCard && !repeating ? +(el.parcels?.value || 1) : 1;
+    repeatRow?.classList.toggle('hidden', n > 1);
+    $('.repeat-end', form)?.classList.toggle('hidden', !el.repeat?.checked || n > 1);
+    if (parcelsField) amountLabel.textContent = n > 1 ? 'Valor total' : 'Valor';
+    if (!preview) return;
+    const card = onCard ? S.byId('cards', src.slice(2)) : null;
+    if (!card || !el.date.value) { preview.classList.add('hidden'); return; }
+    const first = S.invoiceKeyFor(card, el.date.value);
+    const total = getMoney(el.amount);
+    preview.innerHTML = n > 1
+      ? `<b>${n}x de ${money(Math.floor(total / n))}</b><br>1ª parcela na fatura de <b>${monthYear(first)}</b> · última em <b>${monthYear(addMonthsKey(first, n - 1))}</b>`
+      : `Entra na fatura de <b>${monthYear(first)}</b> · vence ${fmtShort(S.invoiceDue(card, first))}`;
+    preview.classList.remove('hidden');
   };
   el.source?.addEventListener('change', syncParcels);
   el.parcels?.addEventListener('change', syncParcels);
+  el.repeat?.addEventListener('change', syncParcels);
+  el.amount.addEventListener('input', syncParcels);
+  el.date.addEventListener('change', syncParcels);
   syncParcels();
-  el.mode?.addEventListener('change', () => $('.bill-parcels', form).classList.toggle('hidden', el.mode.value !== 'parcelada'));
+  el.mode?.addEventListener('change', () => {
+    $('.bill-parcels', form).classList.toggle('hidden', el.mode.value !== 'parcelada');
+    $('.bill-end', form).classList.toggle('hidden', el.mode.value !== 'mensal');
+  });
   el.categoryId.addEventListener('change', () => {
     if (el.categoryId.value === '__new') newCategoryInline(el.categoryId, st.type === 'receita' ? 'receita' : 'despesa');
   });
@@ -721,8 +860,12 @@ async function submitEntry(form, st, again, draw) {
   if (!f.amount) return invalid(el.amount, 'Informe o valor');
   if (!f.date) return invalid(el.date, 'Informe a data');
 
+  const endInput = el.billEnd || el.repeatEnd;
+  const end = endInput?.value || null;
+  if (end && end < monthKey(f.date)) return invalid(endInput, 'O término deve ser depois da primeira data');
+
   if (st.type === 'bill') {
-    const bf = { desc: f.desc, amount: f.amount, due: f.date, categoryId: f.categoryId, payWith: f.source, notes: f.notes };
+    const bf = { desc: f.desc, amount: f.amount, due: f.date, categoryId: f.categoryId, payWith: f.source, notes: f.notes, end };
     if (st.edit) {
       S.updateBill(st.edit, bf, !!el.applyFuture?.checked);
     } else {
@@ -730,8 +873,10 @@ async function submitEntry(form, st, again, draw) {
       S.addBill({ ...bf, mode: el.mode.value, parcels });
     }
   } else {
-    const tf = { ...f, type: st.type, parcels: st.type === 'despesa' && f.source?.startsWith('c:') ? +el.parcels.value : 1 };
-    if (st.edit) S.updateTx(st.edit, tf);
+    const repeat = !!el.repeat?.checked;
+    const onCard = st.type === 'despesa' && f.source?.startsWith('c:');
+    const tf = { ...f, type: st.type, repeat, repeatEnd: end, parcels: onCard && !repeat && !st.edit?.seriesId ? +el.parcels.value : 1 };
+    if (st.edit) S.updateTx(st.edit, tf, !!el.applyFuture?.checked);
     else S.addTx(tf);
     if (f.source?.startsWith('a:')) d.settings.lastAccount = f.source;
   }
@@ -759,6 +904,11 @@ async function deleteEntry(st) {
       if (!await confirmBox('Excluir esta conta?', x.paid ? 'A despesa do pagamento continua registrada em Lançamentos.' : '', 'Excluir')) return;
       S.deleteBill(x, 'one');
     }
+  } else if (x.seriesId) {
+    const choice = await choose('Excluir lançamento', 'Este lançamento se repete todo mês. Excluir os próximos encerra a repetição.',
+      [['one', 'Só este', 'ghost'], ['future', 'Este e os próximos', 'danger']]);
+    if (!choice) return;
+    S.deleteTx(x, choice);
   } else {
     const msg = x.groupId ? `As ${x.installment.total} parcelas desta compra serão excluídas.` : x.billId ? 'A conta a pagar vinculada volta a ficar pendente.' : '';
     if (!await confirmBox('Excluir lançamento?', msg, 'Excluir')) return;
@@ -836,9 +986,15 @@ function openPayable(id) {
       <dl class="kv">${kv.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>
       <div class="btn-col">
         ${b.paid ? `<button class="btn ghost" data-x="unpay">Desfazer pagamento</button>` : `<button class="btn primary" data-x="pay">${icon('check')}Pagar</button>`}
+        ${b.paid ? '' : `<button class="btn ghost" data-x="gcal">${icon('calendar')}Lembrar no Google Agenda</button>`}
         <button class="btn ghost" data-x="edit">${icon('edit')}Editar</button>
       </div>`;
     $('[data-x=pay]', body)?.addEventListener('click', () => openPaySheet(p));
+    $('[data-x=gcal]', body)?.addEventListener('click', () => openGcal({
+      title: `Vence: ${b.desc} (${money(b.amount)})`, date: b.due,
+      details: 'Lembrete criado pelo AVR Finanças.',
+      monthly: b.recur === 'mensal', until: S.D().series[b.seriesId]?.end,
+    }));
     $('[data-x=unpay]', body)?.addEventListener('click', async () => {
       if (!await confirmBox('Desfazer pagamento?', 'A despesa registrada no pagamento será removida e a conta volta a ficar pendente.', 'Desfazer')) return;
       S.unpayBill(b);
@@ -886,8 +1042,13 @@ function openInvoice(cardId, key) {
       <div class="btn-col mt">
         ${inv.remaining > 0 ? `<button class="btn primary" data-x="pay">${icon('check')}Pagar fatura (${money(inv.remaining)})</button>` : ''}
         ${inv.payments.length ? '<button class="btn ghost" data-x="unpay">Desfazer pagamento</button>' : ''}
+        <button class="btn ghost" data-x="gcal">${icon('calendar')}Lembrar vencimento no Google Agenda</button>
         <button class="btn ghost" data-x="edit">${icon('edit')}Editar cartão</button>
       </div>`;
+    $('[data-x=gcal]', body).addEventListener('click', () => openGcal({
+      title: `Vence: fatura ${c.name}`, date: inv.due,
+      details: 'Lembrete mensal criado pelo AVR Finanças.', monthly: true,
+    }));
     body.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click', () => { k = addMonthsKey(k, +b.dataset.nav); draw(); }));
     $('[data-x=pay]', body)?.addEventListener('click', () => openPaySheet({
       kind: 'fatura', inv, desc: `Fatura ${c.name}`, due: inv.due, amount: inv.remaining,
@@ -1036,20 +1197,23 @@ function categoryForm(cat, type) {
       <div class="field"><span>Cor</span>
         <div class="swatches">${S.COLORS.map((c, i) => `<label><input type="radio" name="color" value="${c}" ${(cat ? cat.color === c : i === S.D().categories.length % S.COLORS.length) ? 'checked' : ''}><span style="background:${c}"></span></label>`).join('')}</div>
       </div>
+      ${type === 'despesa' ? '<label class="field"><span>Limite mensal (opcional)</span><input name="limit" class="money" inputmode="numeric"><small>O app avisa quando os gastos do mês chegam perto ou passam deste valor.</small></label>' : ''}
       <div class="btn-col">
         <button type="submit" class="btn primary">${icon('check')}Salvar</button>
         ${cat ? `<button type="button" class="btn danger" data-del>${icon('trash')}Excluir categoria</button>` : ''}
       </div>
     </form>`);
   const form = $('form', w), el = form.elements;
+  if (el.limit) { initMoney(el.limit); setMoney(el.limit, cat?.limit || 0); }
   if (cat) el.name.value = cat.name;
   else setTimeout(() => el.name.focus(), 280);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = el.name.value.trim();
     if (!name) return invalid(el.name, 'Informe o nome');
-    if (cat) Object.assign(cat, { name, color: el.color.value });
-    else S.addCategory({ name, type, color: el.color.value });
+    const limit = el.limit ? getMoney(el.limit) || null : null;
+    if (cat) Object.assign(cat, { name, color: el.color.value, limit });
+    else S.addCategory({ name, type, color: el.color.value }).limit = limit;
     closeSheet();
     await commit();
   });
@@ -1084,6 +1248,7 @@ function lockApp() {
           <div class="lock-brand">${logo()}</div>
           <h2>${icon('lock')}Digite seu PIN</h2>
           <div class="dots ${err ? 'shake' : ''}">${[0, 1, 2, 3].map((i) => `<i class="${i < pin.length ? 'on' : ''}"></i>`).join('')}</div>
+          ${S.D().settings.bio ? `<button class="btn ghost bio-btn" data-k="bio">${icon('finger')}Usar digital</button>` : ''}
           <div class="keys">
             ${range(1, 9).map((n) => `<button data-k="${n}">${n}</button>`).join('')}
             <button data-k="forgot" class="k-text">Esqueci</button>
@@ -1105,6 +1270,7 @@ function lockApp() {
       if (k === 'forgot') { mode = 'forgot'; return draw(); }
       if (k === 'back') { mode = 'pin'; pin = ''; return draw(); }
       if (k === 'wipe') { S.wipe(); await commit(); return unlock(); }
+      if (k === 'bio') { if (await verifyBio()) return unlock(); return toast('Digital não confirmada. Use o PIN.'); }
       if (!/^\d$/.test(k) || pin.length >= 4) return;
       pin += k;
       draw();
@@ -1123,6 +1289,8 @@ function lockApp() {
     document.addEventListener('keydown', onKey);
     el.classList.remove('hidden');
     draw();
+    // Com a digital ativada, já pede a biometria ao abrir (o PIN continua disponível).
+    if (S.D().settings.bio) setTimeout(() => press('bio'), 300);
   });
   return locking;
 }
@@ -1170,6 +1338,7 @@ function removePinForm() {
     e.preventDefault();
     if (!await S.checkPin(el.current.value)) return invalid(el.current, 'PIN incorreto');
     await S.setPin(null);
+    S.D().settings.bio = null;
     closeSheet();
     await commit();
     toast('PIN removido');
@@ -1215,6 +1384,121 @@ async function importBackup(file) {
   toast('Backup restaurado ✓');
 }
 
+// ================= Planilha (CSV para Excel) =================
+function downloadFile(name, content, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], { type }));
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+const csvCell = (v) => { const s = String(v ?? ''); return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+const csvNum = (cents) => (cents / 100).toFixed(2).replace('.', ',');
+// Separador ";" e vírgula decimal: o Excel em português abre direto, com acentos (BOM UTF-8).
+const toCsv = (rows) => '\uFEFF' + rows.map((r) => r.map(csvCell).join(';')).join('\r\n');
+
+function exportCsv(kind) {
+  const from = $('#exp-from')?.value, to = $('#exp-to')?.value;
+  if (!from || !to) return toast('Escolha o período');
+  if (to < from) return toast('O mês final deve ser depois do inicial');
+  const d = S.D(), today = todayStr();
+  const inRange = (date) => { const k = monthKey(date); return k >= from && k <= to; };
+  const catName = (id) => S.byId('categories', id)?.name || 'Sem categoria';
+  let rows, name;
+  if (kind === 'lanc') {
+    const TYPES = { receita: 'Receita', despesa: 'Despesa', fatura: 'Pagamento de fatura' };
+    rows = [['Data', 'Tipo', 'Descrição', 'Categoria', 'Conta/Cartão', 'Parcela', 'Valor (R$)', 'Situação', 'Observação']];
+    d.txs.filter((t) => inRange(t.date)).sort((a, b) => a.date.localeCompare(b.date)).forEach((t) => {
+      const src = t.cardId ? S.byId('cards', t.cardId)?.name : t.accountId ? S.byId('accounts', t.accountId)?.name : t.payCard ? S.byId('cards', t.payCard)?.name : '';
+      rows.push([fmtDate(t.date), TYPES[t.type], t.desc, t.type === 'fatura' ? '' : catName(t.categoryId), src || '',
+        t.installment ? `${t.installment.n}/${t.installment.total}` : '', csvNum(t.type === 'receita' ? t.amount : -t.amount),
+        t.date > today ? 'Previsto' : 'Realizado', t.notes || '']);
+    });
+    name = `avr-lancamentos-${from}_${to}.csv`;
+  } else {
+    rows = [['Vencimento', 'Descrição', 'Tipo', 'Categoria', 'Parcela', 'Valor (R$)', 'Situação', 'Pago em']];
+    S.payables().filter((p) => inRange(p.due)).forEach((p) => {
+      const status = p.paid ? 'Paga' : p.due < today ? 'Vencida' : 'Pendente';
+      rows.push([fmtDate(p.due), p.desc, p.kind === 'fatura' ? 'Fatura de cartão' : p.recur === 'mensal' ? 'Mensal' : 'Conta',
+        p.kind === 'fatura' ? '' : catName(p.categoryId), p.installment ? `${p.installment.n}/${p.installment.total}` : '',
+        csvNum(p.amount), status, p.paidDate ? fmtDate(p.paidDate) : '']);
+    });
+    name = `avr-contas-a-pagar-${from}_${to}.csv`;
+  }
+  if (rows.length === 1) return toast('Nada encontrado nesse período');
+  downloadFile(name, toCsv(rows), 'text/csv;charset=utf-8');
+  toast(`Planilha gerada: ${rows.length - 1} linha(s)`);
+}
+
+// ================= Google Agenda =================
+const ymd = (s) => s.replace(/-/g, '');
+function openGcal({ title, date, details, monthly, until }) {
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: title, dates: `${ymd(date)}/${ymd(addDays(date, 1))}`, details });
+  if (monthly) p.set('recur', `RRULE:FREQ=MONTHLY${until ? `;UNTIL=${ymd(endOfMonth(until))}T235959Z` : ''}`);
+  window.open(`https://calendar.google.com/calendar/render?${p}`, '_blank', 'noopener');
+}
+
+// Arquivo .ics com as contas e faturas pendentes dos próximos 3 meses (aviso às 9h do dia anterior).
+function exportIcs() {
+  const today = todayStr(), end = endOfMonth(addMonthsKey(monthKey(today), 3));
+  const items = S.payables().filter((p) => !p.paid && p.due >= today && p.due <= end);
+  if (!items.length) return toast('Nenhuma conta pendente nos próximos 3 meses');
+  const icsText = (s) => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//AVR Financas//PT-BR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Vencimentos AVR Finanças'];
+  for (const p of items) {
+    const title = icsText(`Vence: ${p.desc} (${money(p.amount)})`);
+    lines.push('BEGIN:VEVENT', `UID:${p.id}-${ymd(p.due)}@avr-financas`, `DTSTAMP:${stamp}`,
+      `DTSTART;VALUE=DATE:${ymd(p.due)}`, `DTEND;VALUE=DATE:${ymd(addDays(p.due, 1))}`, `SUMMARY:${title}`,
+      'DESCRIPTION:Lembrete criado pelo AVR Finanças', 'TRANSP:TRANSPARENT',
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${title}`, 'TRIGGER:-PT15H', 'END:VALARM', 'END:VEVENT');
+  }
+  lines.push('END:VCALENDAR');
+  downloadFile('vencimentos-avr.ics', lines.join('\r\n'), 'text/calendar;charset=utf-8');
+  toast(`${items.length} vencimento(s) no arquivo`);
+}
+
+// ================= Digital (biometria do aparelho via WebAuthn) =================
+// A digital fica guardada no próprio Android; o app só pede que o aparelho confirme o dono.
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64u = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const randomBytes = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+async function bioAvailable() {
+  try { return !!window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); } catch { return false; }
+}
+async function enableBio() {
+  if (!await bioAvailable()) return toast('Este aparelho ou navegador não oferece desbloqueio por digital');
+  try {
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: randomBytes(32),
+      rp: { name: 'AVR Finanças' },
+      user: { id: randomBytes(16), name: 'avr-financas', displayName: 'AVR Finanças' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
+      attestation: 'none', timeout: 60000,
+    } });
+    S.D().settings.bio = { id: b64u(cred.rawId) };
+    await commit();
+    toast('Digital ativada ✓');
+  } catch (err) {
+    toast(err.name === 'NotAllowedError' ? 'Ativação cancelada' : 'Não foi possível ativar a digital');
+  }
+}
+async function verifyBio() {
+  const bio = S.D().settings.bio;
+  if (!bio) return false;
+  try {
+    await navigator.credentials.get({ publicKey: {
+      challenge: randomBytes(32), allowCredentials: [{ type: 'public-key', id: fromB64u(bio.id) }],
+      userVerification: 'required', timeout: 60000,
+    } });
+    return true;
+  } catch { return false; }
+}
+
 // ================= Ações (cliques) =================
 const ACTIONS = {
   goto: (ds) => { location.hash = ds.tab; },
@@ -1237,6 +1521,11 @@ const ACTIONS = {
   'dismiss-onb': async () => { S.D().settings.onboarded = true; await commit(); },
   'set-pin': () => pinForm(),
   'remove-pin': () => removePinForm(),
+  'bio-on': () => enableBio(),
+  'bio-off': async () => { S.D().settings.bio = null; await commit(); toast('Digital desativada'); },
+  'export-csv': (ds) => exportCsv(ds.kind),
+  'export-ics': () => exportIcs(),
+  'bar-tip': (ds) => toast(ds.tip, { duration: 3500 }),
   export: (ds) => exportBackup(!!ds.share),
   import: () => $('#import-file').click(),
   wipe: async () => {

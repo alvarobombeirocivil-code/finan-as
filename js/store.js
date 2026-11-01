@@ -15,6 +15,7 @@ const empty = () => ({
   bills: [],
   series: {},
   txs: [],
+  txSeries: {},
   invoicePayments: [],
 });
 
@@ -105,7 +106,10 @@ function applySource(tx, source) {
   }
 }
 
+const sourceOf = (t) => (t.cardId ? `c:${t.cardId}` : t.accountId ? `a:${t.accountId}` : null);
+
 // Despesa no cartão com parcelas vira N lançamentos, um em cada fatura.
+// Com f.repeat, o lançamento se repete todo mês (até f.repeatEnd, se informado).
 export function addTx(f) {
   const base = { type: f.type, desc: f.desc, categoryId: f.categoryId || null, notes: f.notes || '', billId: f.billId || null, created: Date.now() };
   const card = f.source?.startsWith('c:') ? byId('cards', f.source.slice(2)) : null;
@@ -113,6 +117,10 @@ export function addTx(f) {
   if (n === 1) {
     const tx = { id: uid(), ...base, amount: f.amount, date: f.date };
     applySource(tx, f.source);
+    if (f.repeat && (f.type === 'receita' || f.type === 'despesa')) {
+      tx.seriesId = uid();
+      data.txSeries[tx.seriesId] = { day: +f.date.slice(8), until: monthKey(f.date), end: f.repeatEnd || null, stopped: false };
+    }
     data.txs.push(tx);
     return tx;
   }
@@ -135,8 +143,8 @@ export function addTx(f) {
   return first;
 }
 
-export function updateTx(tx, f) {
-  const toParcels = f.type === 'despesa' && f.source?.startsWith('c:') && f.parcels > 1;
+export function updateTx(tx, f, applyFuture) {
+  const toParcels = !tx.seriesId && f.type === 'despesa' && f.source?.startsWith('c:') && f.parcels > 1;
   if (tx.groupId || toParcels) {
     remove('txs', (t) => (tx.groupId ? t.groupId === tx.groupId : t.id === tx.id));
     const first = addTx({ ...f, billId: tx.billId });
@@ -144,14 +152,32 @@ export function updateTx(tx, f) {
     if (b) Object.assign(b, { txId: first.id, paidAmount: f.amount, paidDate: f.date });
     return;
   }
+  const oldDay = +tx.date.slice(8);
   Object.assign(tx, { desc: f.desc, amount: f.amount, date: f.date, categoryId: f.categoryId || null, notes: f.notes || '' });
   applySource(tx, f.source);
   const b = byId('bills', tx.billId);
   if (b) Object.assign(b, { paidAmount: tx.amount, paidDate: tx.date });
+  const s = data.txSeries[tx.seriesId];
+  if (applyFuture && s) {
+    const newDay = +f.date.slice(8);
+    s.end = f.repeatEnd || null;
+    if (newDay !== oldDay) s.day = newDay;
+    remove('txs', (o) => o.seriesId === tx.seriesId && s.end && monthKey(o.date) > s.end);
+    for (const o of data.txs) {
+      if (o.seriesId !== tx.seriesId || o.id === tx.id || o.date <= tx.date) continue;
+      Object.assign(o, { desc: tx.desc, amount: tx.amount, categoryId: tx.categoryId, notes: tx.notes });
+      if (newDay !== oldDay) o.date = dateInMonth(monthKey(o.date), newDay);
+      applySource(o, f.source);
+    }
+  }
 }
 
-export function deleteTx(tx) {
-  if (tx.groupId) remove('txs', (t) => t.groupId === tx.groupId);
+// scope: 'one' = só este; 'future' = este e os próximos da repetição (encerra a repetição).
+export function deleteTx(tx, scope = 'one') {
+  if (scope === 'future' && tx.seriesId) {
+    remove('txs', (t) => t.seriesId === tx.seriesId && t.date >= tx.date);
+    if (data.txSeries[tx.seriesId]) data.txSeries[tx.seriesId].stopped = true;
+  } else if (tx.groupId) remove('txs', (t) => t.groupId === tx.groupId);
   else remove('txs', (t) => t.id === tx.id);
   const b = byId('bills', tx.billId);
   if (b) resetPaid(b);
@@ -172,7 +198,7 @@ export function addBill(f) {
     const b = newBill(f);
     b.recur = 'mensal';
     b.seriesId = uid();
-    data.series[b.seriesId] = { day: +f.due.slice(8), until: monthKey(f.due), stopped: false };
+    data.series[b.seriesId] = { day: +f.due.slice(8), until: monthKey(f.due), end: f.end || null, stopped: false };
     data.bills.push(b);
   } else if (f.mode === 'parcelada') {
     const sid = uid(), day = +f.due.slice(8);
@@ -187,17 +213,36 @@ export function addBill(f) {
   }
 }
 
-// Contas mensais: mantém sempre criadas as ocorrências até o mês que vem.
+// Repetições mensais (contas, receitas e despesas): mantém criadas as ocorrências
+// dos próximos 12 meses, respeitando a data de término (s.end), se houver.
+export const HORIZON_MONTHS = 12;
 function ensureRecurring() {
-  const limit = addMonthsKey(monthKey(todayStr()), 1);
+  const limit = addMonthsKey(monthKey(todayStr()), HORIZON_MONTHS);
   for (const [sid, s] of Object.entries(data.series)) {
     if (s.stopped) continue;
     const items = data.bills.filter((b) => b.seriesId === sid);
     if (!items.length) { s.stopped = true; continue; }
     const tpl = items.reduce((a, b) => (b.due > a.due ? b : a));
-    while (s.until < limit) {
+    const stop = s.end && s.end < limit ? s.end : limit;
+    while (s.until < stop) {
       s.until = addMonthsKey(s.until, 1);
       data.bills.push({ ...newBill({ ...tpl, due: dateInMonth(s.until, s.day) }), recur: 'mensal', seriesId: sid });
+    }
+  }
+  for (const [sid, s] of Object.entries(data.txSeries)) {
+    if (s.stopped) continue;
+    const items = data.txs.filter((t) => t.seriesId === sid);
+    if (!items.length) { s.stopped = true; continue; }
+    const tpl = items.reduce((a, b) => (b.date > a.date ? b : a));
+    const stop = s.end && s.end < limit ? s.end : limit;
+    while (s.until < stop) {
+      s.until = addMonthsKey(s.until, 1);
+      const tx = {
+        id: uid(), type: tpl.type, desc: tpl.desc, amount: tpl.amount, categoryId: tpl.categoryId, notes: tpl.notes,
+        billId: null, seriesId: sid, created: Date.now(), date: dateInMonth(s.until, s.day),
+      };
+      applySource(tx, sourceOf(tpl));
+      data.txs.push(tx);
     }
   }
 }
@@ -216,6 +261,10 @@ export function updateBill(b, f, applyFuture) {
     }
     const s = data.series[b.seriesId];
     if (s && newDay !== oldDay) s.day = newDay;
+    if (s && b.recur === 'mensal') {
+      s.end = f.end || null;
+      if (s.end) remove('bills', (o) => o.seriesId === b.seriesId && !o.paid && monthKey(o.due) > s.end);
+    }
   }
 }
 
@@ -277,6 +326,32 @@ export function monthSummary(key) {
     else if (t.type === 'despesa') despesas += t.amount;
   }
   return { receitas, despesas, saldo: receitas - despesas };
+}
+
+// Saldo previsto em `end`: saldo de hoje + receitas futuras − despesas futuras nas contas
+// − contas a pagar e faturas pendentes que vencem até `end` (inclusive as atrasadas).
+export function forecast(end) {
+  const today = todayStr();
+  const saldo = data.accounts.reduce((s, a) => s + accountBalance(a), 0);
+  let receber = 0, pagar = 0;
+  for (const t of data.txs) {
+    if (t.date <= today || t.date > end || t.cardId) continue;
+    if (t.type === 'receita') receber += t.amount;
+    else pagar += t.amount;
+  }
+  for (const p of payables()) if (!p.paid && p.due <= end) pagar += p.amount;
+  return { saldo: saldo + receber - pagar, receber, pagar };
+}
+
+// Despesas do mês por categoria ('' = sem categoria), contando compras no cartão pela data.
+export function spendingByCategory(key) {
+  const m = new Map();
+  for (const t of data.txs) {
+    if (t.type !== 'despesa' || t.date.slice(0, 7) !== key) continue;
+    const k = t.categoryId || '';
+    m.set(k, (m.get(k) || 0) + t.amount);
+  }
+  return m;
 }
 
 // ---------- Categorias ----------
