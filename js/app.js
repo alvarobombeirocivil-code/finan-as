@@ -38,7 +38,7 @@ async function boot() {
   $('#fab').innerHTML = icon('plus');
   $('#fab').addEventListener('click', () => openEntryForm({ type: ui.tab === 'lanc' ? 'despesa' : 'bill' }));
   window.addEventListener('hashchange', route);
-  Drive.loadGoogle();
+  if (S.D().settings.drive) Drive.loadGoogle();
   route();
   if (S.D().settings.pin) await lockApp();
   handleShortcut();
@@ -85,6 +85,7 @@ function route() {
 
 function render() {
   $('#view').innerHTML = VIEWS[ui.tab]() + footer();
+  if (ui.tab === 'config') Drive.loadGoogle();
   document.querySelectorAll('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === ui.tab));
   $('#fab').classList.toggle('hidden', ui.tab === 'config');
   if (lastTab !== ui.tab) { window.scrollTo(0, 0); lastTab = ui.tab; }
@@ -240,7 +241,7 @@ function driveSection() {
     return `
     <section class="card-sec">
       <h2>${icon('cloud')}Backup automático no Google Drive</h2>
-      <p>O app salva seus dados no seu Google Drive sozinho, a cada alteração. Em outro celular, é só conectar a mesma conta Google para trazer tudo de volta.</p>
+      <p>O app salva seus dados no seu Google Drive sozinho, a cada alteração. Em outro celular, é só conectar a mesma conta Google para trazer tudo de volta. <a href="privacidade.html">Política de privacidade</a></p>
       <button class="btn primary w100" data-act="drive-connect">${icon('cloud')}Conectar ao Google Drive</button>
     </section>`;
   }
@@ -261,7 +262,7 @@ function driveSection() {
         <button class="btn primary" data-act="drive-sync">Sincronizar agora</button>
         <button class="btn ghost" data-act="drive-off">Desconectar</button>
       </div>
-      <p class="hint-muted">O arquivo fica na pasta “AVR Finanças” do seu Drive. O app só acessa os arquivos que ele mesmo criou.</p>
+      <p class="hint-muted">O arquivo fica na pasta “AVR Finanças” do seu Drive. O app só acessa os arquivos que ele mesmo criou. <a href="privacidade.html">Política de privacidade</a></p>
     </section>`;
 }
 
@@ -311,6 +312,7 @@ const footer = () => `
   <footer class="app-footer">
     <p>Desenvolvido por <b>${CONTACT.name}</b> · ${CONTACT.phone}</p>
     <button class="link-btn" data-act="contact">${icon('chat')}Entre em contato</button>
+    <a class="link-btn privacy-link" href="privacidade.html">Política de privacidade</a>
   </footer>`;
 
 const contactCard = () => `

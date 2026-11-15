@@ -1,6 +1,6 @@
 // Service worker: guarda o app no aparelho para funcionar offline.
 // Ao publicar uma nova versão, altere VERSION para o app oferecer a atualização.
-const VERSION = 'v1.6.0';
+const VERSION = 'v1.6.1';
 const CACHE = `financas-${VERSION}`;
 const ASSETS = [
   './',
