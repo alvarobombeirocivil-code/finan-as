@@ -689,7 +689,7 @@ function viewConfig() {
       <h2>${icon('alert')}Zona de perigo</h2>
       <button class="btn danger" data-act="wipe">${icon('trash')}Apagar todos os dados</button>
     </section>
-    <p class="ver">AVR Finanças v1.5 · dados salvos apenas neste aparelho</p>`;
+    <p class="ver">AVR Finanças v1.6 · dados salvos apenas neste aparelho</p>`;
 }
 
 // ================= Bottom sheets (janelas que sobem de baixo) =================

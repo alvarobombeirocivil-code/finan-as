@@ -756,3 +756,69 @@ a.btn.whats { color: #fff; background: linear-gradient(145deg, #2bd66a, #12a150)
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* ---------- Telas grandes (notebook e computador) ---------- */
+@media (min-width: 1024px) {
+  :root { --side: 248px; }
+  #app { max-width: none; }
+  #view {
+    margin-left: var(--side);
+    max-width: 1180px;
+    padding: 28px 48px 120px;
+  }
+  /* Abas viram menu lateral, com a logo no topo */
+  .tabbar {
+    top: 0; bottom: 0; left: 0; right: auto;
+    width: var(--side); max-width: none; margin: 0;
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 24px 14px;
+    border-top: 0; border-right: 1px solid var(--line);
+  }
+  .tabbar::before {
+    content: ''; display: block; height: 64px; margin: 0 6px 22px;
+    background: url(../icons/logo.svg) no-repeat center / contain;
+    filter: drop-shadow(0 0 14px rgba(255, 138, 42, 0.28));
+  }
+  [data-theme="light"] .tabbar::before { background-image: url(../icons/logo-brown.svg); filter: none; }
+  .tabbar a {
+    flex-direction: row; justify-content: flex-start; gap: 14px;
+    padding: 12px 14px; border-radius: 12px;
+    font-size: 15px; white-space: nowrap;
+  }
+  .tabbar a:hover { background: var(--surface); color: var(--text); }
+  .tabbar a.active { background: var(--surface); }
+  .tabbar a.active::after { top: 10px; bottom: 10px; left: 0; width: 3px; height: auto; border-radius: 0 3px 3px 0; }
+  /* A logo já está no menu: some a faixa do topo */
+  .brand { display: none; }
+  /* Botão de novo lançamento com texto */
+  .fab {
+    right: 40px; bottom: 32px;
+    width: auto; height: 56px; padding: 0 22px 0 18px; gap: 10px;
+    display: flex; border-radius: 18px; font-weight: 700; font-size: 15px;
+  }
+  .fab::after { content: 'Novo lançamento'; }
+  /* Conteúdo em duas colunas */
+  .list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .cc-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .stats.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .hero { padding: 28px 32px; }
+  .hero-value { font-size: 44px; }
+  .hero-row { grid-template-columns: repeat(2, minmax(0, 260px)); }
+  #view > .chart-card { float: left; width: calc(50% - 6px); }
+  #view > .chart-card + .chart-card { margin-left: 12px; }
+  #view > .card-sec { max-width: 760px; }
+  /* Janelas no centro da tela */
+  .sheet {
+    top: 50%; bottom: auto; left: 50%; right: auto;
+    width: 560px; max-height: 86vh;
+    border-radius: 24px; border-bottom: 1px solid var(--line-2);
+    transform: translate(-50%, -46%) scale(0.98); opacity: 0;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+    padding-bottom: 24px;
+  }
+  .sheet-wrap.open .sheet { transform: translate(-50%, -50%); opacity: 1; }
+  .sheet-grip { display: none; }
+  .toast { bottom: 104px; left: calc(50% + var(--side) / 2); }
+  .app-footer { clear: both; max-width: 760px; margin-inline: auto; }
+}
