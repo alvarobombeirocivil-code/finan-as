@@ -5,6 +5,7 @@ import {
   diffDays, esc, safeColor, range, dateInMonth, MONTHS,
 } from './util.js';
 import { icon } from './icons.js';
+import * as Drive from './drive.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const ui = { tab: 'inicio', month: monthKey(todayStr()), pagarFilter: 'pendentes', lancFilter: 'todos' };
@@ -37,10 +38,13 @@ async function boot() {
   $('#fab').innerHTML = icon('plus');
   $('#fab').addEventListener('click', () => openEntryForm({ type: ui.tab === 'lanc' ? 'despesa' : 'bill' }));
   window.addEventListener('hashchange', route);
+  Drive.loadGoogle();
   route();
   if (S.D().settings.pin) await lockApp();
   handleShortcut();
   registerSW();
+  syncDrive();
+  window.addEventListener('online', () => syncDrive());
 }
 
 function handleShortcut() {
@@ -87,6 +91,7 @@ function render() {
 }
 
 async function commit() {
+  S.touch();
   try {
     await S.persist();
   } catch (err) {
@@ -94,6 +99,170 @@ async function commit() {
   }
   render();
   sheets.forEach((w) => w._refresh?.());
+  scheduleBackup();
+}
+
+// ================= Backup automático no Google Drive =================
+// meta.updatedAt marca a versão dos dados deste aparelho; drive.lastSync guarda a última
+// versão que este aparelho e o Drive tinham em comum. Comparando as duas com a versão do Drive,
+// o app sabe se deve enviar, baixar ou perguntar qual manter.
+const driveState = { status: 'idle', busy: false, lastCheck: 0 };
+let backupTimer;
+
+function setDriveStatus(status) {
+  if (driveState.status === status) return;
+  driveState.status = status;
+  if (ui.tab === 'inicio' || ui.tab === 'config') render();
+}
+function scheduleBackup() {
+  if (!S.D().settings.drive) return;
+  clearTimeout(backupTimer);
+  backupTimer = setTimeout(() => syncDrive(), 4000);
+}
+const fmtDateTime = (iso) => {
+  const d = new Date(iso);
+  return `${fmtDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`)} às ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+async function syncDrive({ interactive = false } = {}) {
+  const st = S.D().settings.drive;
+  if (!st || driveState.busy || locking) return;
+  if (!navigator.onLine) return setDriveStatus('offline');
+  if (!Drive.hasToken()) {
+    if (!interactive) return setDriveStatus('auth');
+    try {
+      await Drive.connect(st.email);
+    } catch (e) {
+      setDriveStatus('auth');
+      if (e.message !== 'cancelado') toast(e.message);
+      return;
+    }
+  }
+  driveState.busy = true;
+  driveState.lastCheck = Date.now();
+  setDriveStatus('syncing');
+  try {
+    const remote = await Drive.remoteInfo(st);
+    const local = S.D().meta.updatedAt || null;
+    const base = st.lastSync || null;
+    const localChanged = local !== base;
+    const remoteChanged = !!remote && (remote.updatedAt || null) !== base;
+    let action = 'none';
+    if (!remote) action = local || S.hasData() ? 'upload' : 'none';
+    else if (remote.updatedAt && remote.updatedAt === local) action = 'same';
+    else if (remoteChanged && !localChanged) action = 'download';
+    else if (localChanged && !remoteChanged) action = 'upload';
+    else if (!S.hasData()) action = 'download';
+    else {
+      const when = fmtDateTime(remote.updatedAt || remote.modifiedTime);
+      action = await choose('Quais dados manter?',
+        `Este celular e o Google Drive têm alterações diferentes. A última cópia do Drive é de ${when}.`,
+        [['download', 'Usar os dados do Google Drive', 'primary'], ['upload', 'Manter os dados deste celular', 'ghost']]);
+      if (!action) { driveState.busy = false; return setDriveStatus('conflict'); }
+    }
+
+    if (action === 'download') {
+      const obj = await Drive.download(remote.id);
+      if (!S.isValidBackup(obj)) throw new Error('O backup do Drive não pôde ser lido');
+      S.replaceAll(obj);
+      S.D().meta.updatedAt = remote.updatedAt || S.D().meta.updatedAt;
+      st.lastSync = S.D().meta.updatedAt;
+      toast('Dados atualizados do Google Drive ✓');
+    } else if (action === 'upload') {
+      const stamp = local || new Date().toISOString();
+      S.D().meta.updatedAt = stamp;
+      S.D().settings.lastBackup = todayStr();
+      await Drive.upload(st, JSON.stringify(S.exportData()), stamp);
+      st.lastSync = stamp;
+    } else if (action === 'same') {
+      st.lastSync = local;
+    }
+    if (action !== 'none') st.lastSyncAt = new Date().toISOString();
+    await S.persist();
+    driveState.status = 'ok';
+    render();
+    sheets.forEach((w) => w._refresh?.());
+    if (interactive && action !== 'download') toast(action === 'upload' ? 'Backup salvo no Google Drive ✓' : 'Tudo em dia com o Google Drive ✓');
+  } catch (e) {
+    if (Drive.isAuthError(e)) setDriveStatus('auth');
+    else {
+      setDriveStatus(navigator.onLine ? 'error' : 'offline');
+      if (interactive) toast(e.message);
+    }
+  } finally {
+    driveState.busy = false;
+  }
+}
+
+async function connectDrive() {
+  try {
+    await Drive.connect();
+    const user = await Drive.whoAmI();
+    S.D().settings.drive = { email: user.emailAddress, name: user.displayName || '', fileId: null, folderId: null, lastSync: null, lastSyncAt: null };
+    await S.persist();
+    toast('Conectado ao Google Drive');
+    await syncDrive({ interactive: true });
+  } catch (e) {
+    if (e.message !== 'cancelado') toast(e.message);
+  }
+}
+
+async function disconnectDrive() {
+  if (!await confirmBox('Desconectar do Google Drive?', 'O backup automático para. A cópia que já está no seu Drive continua lá e pode ser usada depois.', 'Desconectar', 'ghost')) return;
+  Drive.disconnect();
+  S.D().settings.drive = null;
+  driveState.status = 'idle';
+  await S.persist();
+  render();
+  toast('Backup automático desativado');
+}
+
+// Faixa na tela inicial: avisa quando o Google pede para reconectar ou sugere ativar o backup.
+function driveBanner(backupDue) {
+  const d = S.D(), ds = d.settings.drive;
+  if (ds && driveState.status === 'auth') {
+    const dirty = (d.meta.updatedAt || null) !== (ds.lastSync || null);
+    return `<button class="banner" data-act="drive-sync">${icon('cloud')}<span>${dirty ? 'Há alterações sem backup. Toque para salvar no Google Drive.' : 'Toque para sincronizar com o Google Drive.'}</span></button>`;
+  }
+  if (ds && driveState.status === 'conflict') return `<button class="banner" data-act="drive-sync">${icon('cloud')}<span>Escolha quais dados manter: deste celular ou do Google Drive. Toque aqui.</span></button>`;
+  if (!ds && backupDue) {
+    return Drive.configured()
+      ? `<button class="banner" data-act="goto" data-tab="config">${icon('cloud')}<span>Ative o backup automático no Google Drive. Toque para configurar.</span></button>`
+      : `<button class="banner" data-act="goto" data-tab="config">${icon('download')}<span>Faz tempo que você não faz backup. Toque para exportar.</span></button>`;
+  }
+  return '';
+}
+
+function driveSection() {
+  if (!Drive.configured()) return '';
+  const ds = S.D().settings.drive;
+  if (!ds) {
+    return `
+    <section class="card-sec">
+      <h2>${icon('cloud')}Backup automático no Google Drive</h2>
+      <p>O app salva seus dados no seu Google Drive sozinho, a cada alteração. Em outro celular, é só conectar a mesma conta Google para trazer tudo de volta.</p>
+      <button class="btn primary w100" data-act="drive-connect">${icon('cloud')}Conectar ao Google Drive</button>
+    </section>`;
+  }
+  const STATUS = {
+    syncing: 'Sincronizando…',
+    ok: 'Tudo salvo no Google Drive.',
+    auth: 'O Google pediu para confirmar a conta. Toque em “Sincronizar agora”.',
+    offline: 'Sem internet. O backup será feito quando a conexão voltar.',
+    error: 'Não foi possível sincronizar agora. Tente de novo em instantes.',
+    conflict: 'Escolha quais dados manter. Toque em “Sincronizar agora”.',
+  };
+  return `
+    <section class="card-sec">
+      <h2>${icon('cloud')}Backup automático no Google Drive</h2>
+      <p>Conectado como <b>${esc(ds.email)}</b><br>
+      Último backup: <b>${ds.lastSyncAt ? fmtDateTime(ds.lastSyncAt) : 'ainda não feito'}</b>${STATUS[driveState.status] ? `<br>${STATUS[driveState.status]}` : ''}</p>
+      <div class="btn-row">
+        <button class="btn primary" data-act="drive-sync">Sincronizar agora</button>
+        <button class="btn ghost" data-act="drive-off">Desconectar</button>
+      </div>
+      <p class="hint-muted">O arquivo fica na pasta “AVR Finanças” do seu Drive. O app só acessa os arquivos que ele mesmo criou.</p>
+    </section>`;
 }
 
 // ================= Componentes =================
@@ -267,7 +436,7 @@ function viewInicio() {
     </section>
     ${limitAlerts(ui.month)}
     ${onboardingCard()}
-    ${backupDue ? `<button class="banner" data-act="goto" data-tab="config">${icon('download')}<span>Faz tempo que você não faz backup. Toque para exportar.</span></button>` : ''}
+    ${driveBanner(backupDue)}
     <div class="stats">
       <div class="stat"><small>A pagar em ${monthShort(ui.month)}</small><b class="t-warn">${money(sumOf(inMonth.filter((p) => !p.paid)))}</b></div>
       <div class="stat"><small>Pago em ${monthShort(ui.month)}</small><b class="t-in">${money(sumOf(inMonth.filter((p) => p.paid)))}</b></div>
@@ -500,9 +669,10 @@ function viewConfig() {
       <p>Gera um arquivo de agenda com as contas e faturas pendentes dos próximos 3 meses, com aviso 1 dia antes. No Android, abra o arquivo com o app de agenda. No Google Agenda, importe pelo computador em calendar.google.com → Configurações → Importar.<br>Dica: em cada conta também há o botão <b>Lembrar no Google Agenda</b>.</p>
       <button class="btn ghost w100" data-act="export-ics">${icon('calendar')}Gerar arquivo de lembretes</button>
     </section>
+    ${driveSection()}
     <section class="card-sec">
-      <h2>${icon('download')}Backup</h2>
-      <p>Seus dados ficam só neste celular. Exporte um backup de vez em quando e guarde no Google Drive.<br>
+      <h2>${icon('download')}Backup em arquivo</h2>
+      <p>${S.D().settings.drive ? 'Além do backup automático, você pode salvar uma cópia em arquivo.' : 'Seus dados ficam só neste celular. Exporte um backup de vez em quando e guarde no Google Drive.'}<br>
       Último backup: <b>${d.settings.lastBackup ? fmtDate(d.settings.lastBackup) : 'nunca'}</b></p>
       <div class="btn-col">
         ${navigator.share ? `<button class="btn primary" data-act="export" data-share="1">${icon('share')}Compartilhar backup (Drive, e-mail…)</button>` : ''}
@@ -519,7 +689,7 @@ function viewConfig() {
       <h2>${icon('alert')}Zona de perigo</h2>
       <button class="btn danger" data-act="wipe">${icon('trash')}Apagar todos os dados</button>
     </section>
-    <p class="ver">AVR Finanças v1.4 · dados salvos apenas neste aparelho</p>`;
+    <p class="ver">AVR Finanças v1.5 · dados salvos apenas neste aparelho</p>`;
 }
 
 // ================= Bottom sheets (janelas que sobem de baixo) =================
@@ -1297,7 +1467,11 @@ function lockApp() {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) hiddenAt = Date.now();
-  else if (S.D()?.settings.pin && hiddenAt && Date.now() - hiddenAt > 60000) lockApp();
+  else {
+    if (S.D()?.settings.pin && hiddenAt && Date.now() - hiddenAt > 60000) lockApp();
+    // Ao voltar para o app, busca alterações feitas em outro aparelho.
+    if (S.D()?.settings.drive && Date.now() - driveState.lastCheck > 30000) syncDrive();
+  }
 });
 
 function pinForm() {
@@ -1519,6 +1693,9 @@ const ACTIONS = {
   'new-cat': (ds) => categoryForm(null, ds.type),
   'open-cat': (ds) => { const c = S.byId('categories', ds.id); if (c) categoryForm(c, c.type); },
   'dismiss-onb': async () => { S.D().settings.onboarded = true; await commit(); },
+  'drive-connect': () => connectDrive(),
+  'drive-sync': () => syncDrive({ interactive: true }),
+  'drive-off': () => disconnectDrive(),
   'set-pin': () => pinForm(),
   'remove-pin': () => removePinForm(),
   'bio-on': () => enableBio(),

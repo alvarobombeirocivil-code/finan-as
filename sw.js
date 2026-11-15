@@ -1,6 +1,6 @@
 // Service worker: guarda o app no aparelho para funcionar offline.
 // Ao publicar uma nova versão, altere VERSION para o app oferecer a atualização.
-const VERSION = 'v1.4.0';
+const VERSION = 'v1.5.0';
 const CACHE = `financas-${VERSION}`;
 const ASSETS = [
   './',
@@ -12,6 +12,8 @@ const ASSETS = [
   'js/db.js',
   'js/util.js',
   'js/icons.js',
+  'js/drive.js',
+  'js/config.js',
   'icons/logo.svg',
   'icons/logo-brown.svg',
   'icons/whatsapp-qr.png',

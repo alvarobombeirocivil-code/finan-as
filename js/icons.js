@@ -32,6 +32,7 @@ const P = {
   chart: '<path d="M4 20V11M10 20V5M16 20v-8M21 20H3"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   finger: '<path d="M12 11v3a8 8 0 0 1-1.5 4.5"/><path d="M8.5 8.8A4 4 0 0 1 16 11v2.5a12 12 0 0 1-.8 4.2"/><path d="M5.6 7A7 7 0 0 1 19 11v1.5"/><path d="M8 12v1.5A6 6 0 0 1 6.5 17.5"/><path d="M19.5 16.5l-.3 1.2"/>',
+  cloud: '<path d="M7 18a5 5 0 1 1 .9-9.9A6 6 0 0 1 19 10a4 4 0 0 1-1 8z"/>',
   party: '<path d="M4 20 9 7l8 8z"/><path d="M14 4v2M19 9h2M17.5 5.5 19 4M15 11l4-1"/>',
 };
 

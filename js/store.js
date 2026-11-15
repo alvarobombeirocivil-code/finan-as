@@ -8,7 +8,9 @@ export const D = () => data;
 const empty = () => ({
   app: 'financas',
   version: 1,
-  settings: { pin: null, lastBackup: null, lastAccount: null, onboarded: false },
+  settings: { pin: null, lastBackup: null, lastAccount: null, onboarded: false, drive: null },
+  // updatedAt: momento da última alteração nos dados; compara este aparelho com o Google Drive.
+  meta: { updatedAt: null },
   categories: [],
   accounts: [],
   cards: [],
@@ -22,10 +24,16 @@ const empty = () => ({
 function normalize(obj) {
   const base = empty();
   if (!obj || typeof obj !== 'object') return base;
-  for (const k of Object.keys(base)) if (k !== 'settings' && obj[k] != null) base[k] = obj[k];
+  for (const k of Object.keys(base)) if (k !== 'settings' && k !== 'meta' && obj[k] != null) base[k] = obj[k];
   base.settings = { ...base.settings, ...(obj.settings || {}) };
+  base.meta = { ...base.meta, ...(obj.meta || {}) };
   return base;
 }
+
+// Marca que os dados mudaram (usado para decidir o que enviar ou baixar do Drive).
+export function touch() { data.meta.updatedAt = new Date().toISOString(); }
+const isEmptyData = (o) => !o.txs.length && !o.bills.length && !o.accounts.length && !o.cards.length && !o.categories.length;
+export const hasData = () => !isEmptyData(data);
 
 export async function load() {
   data = normalize(await db.get('state'));
@@ -423,17 +431,20 @@ export async function checkPin(pin) {
 }
 
 // ---------- Backup ----------
+// PIN, digital e conexão com o Drive são deste aparelho e nunca entram no backup.
 export function exportData() {
   const copy = structuredClone(data);
   copy.settings.pin = null;
+  copy.settings.bio = null;
+  copy.settings.drive = null;
   copy.exportedAt = new Date().toISOString();
   return copy;
 }
 export const isValidBackup = (o) => !!o && typeof o === 'object' && Array.isArray(o.txs) && Array.isArray(o.bills) && Array.isArray(o.accounts);
 export function replaceAll(o) {
-  const pin = data.settings.pin;
+  const { pin, bio, drive } = data.settings;
   data = normalize(o);
   delete data.exportedAt;
-  data.settings.pin = pin;
+  Object.assign(data.settings, { pin, bio: bio ?? null, drive: drive ?? null });
 }
 export function wipe() { data = empty(); }
