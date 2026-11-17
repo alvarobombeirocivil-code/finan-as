@@ -27,7 +27,27 @@ function normalize(obj) {
   for (const k of Object.keys(base)) if (k !== 'settings' && k !== 'meta' && obj[k] != null) base[k] = obj[k];
   base.settings = { ...base.settings, ...(obj.settings || {}) };
   base.meta = { ...base.meta, ...(obj.meta || {}) };
+  fixCardBillPayments(base);
   return base;
+}
+
+// Correção (v1.7): contas a pagar ligadas a um cartão ("Pagar com" = cartão) eram pagas usando
+// o próprio cartão, o que criava uma compra nova na fatura seguinte e contava o valor duas vezes.
+// Aqui o pagamento deixa de ser compra no cartão, e pagamentos de fatura que ficaram sem
+// nenhuma compra são removidos. Roda sempre ao abrir; não muda nada se não houver o problema.
+function fixCardBillPayments(d) {
+  let changed = false;
+  for (const t of d.txs) {
+    if (!t.billId || !t.cardId) continue;
+    const b = d.bills.find((x) => x.id === t.billId);
+    if (b && b.payWith === `c:${t.cardId}`) { t.cardId = null; t.invoice = null; changed = true; }
+  }
+  if (!changed) return;
+  const orphan = d.invoicePayments.filter((p) => !d.txs.some((t) => t.cardId === p.cardId && t.invoice === p.invoice));
+  if (!orphan.length) return;
+  const txIds = new Set(orphan.map((p) => p.txId));
+  d.invoicePayments = d.invoicePayments.filter((p) => !orphan.includes(p));
+  d.txs = d.txs.filter((t) => !txIds.has(t.id));
 }
 
 // Marca que os dados mudaram (usado para decidir o que enviar ou baixar do Drive).
@@ -84,7 +104,34 @@ function cardInvoiceKeys(card) {
   return [...keys];
 }
 export const allInvoices = () => data.cards.flatMap((c) => cardInvoiceKeys(c).map((k) => invoice(c, k)));
-export const cardUsed = (card) => cardInvoiceKeys(card).reduce((s, k) => s + invoice(card, k).remaining, 0);
+
+// Contas a pagar com "Pagar com" = este cartão. Entram na fatura do mês do vencimento.
+const linkedBills = (card) => data.bills.filter((b) => b.payWith === `c:${card.id}`);
+const billValue = (b) => (b.paid ? (b.paidAmount ?? b.amount) : b.amount);
+
+// Fatura completa do mês: compras lançadas no cartão + contas a pagar ligadas ao cartão.
+export function cardStatement(card, key) {
+  const inv = invoice(card, key);
+  const bills = linkedBills(card).filter((b) => monthKey(b.due) === key).sort((a, b) => a.due.localeCompare(b.due) || a.desc.localeCompare(b.desc));
+  const billsTotal = bills.reduce((s, b) => s + billValue(b), 0);
+  const billsPaid = bills.filter((b) => b.paid).reduce((s, b) => s + billValue(b), 0);
+  return {
+    ...inv, bills,
+    grandTotal: inv.total + billsTotal,
+    grandPaid: inv.paid + billsPaid,
+    grandPending: inv.remaining + (billsTotal - billsPaid),
+    count: inv.items.length + bills.length,
+  };
+}
+// Valor que ainda vai cair nas faturas depois do mês `key` (parcelas e contas futuras).
+export function cardFuture(card, key) {
+  const bills = linkedBills(card).filter((b) => !b.paid && monthKey(b.due) > key).reduce((s, b) => s + b.amount, 0);
+  const invs = cardInvoiceKeys(card).filter((k) => k > key).reduce((s, k) => s + invoice(card, k).remaining, 0);
+  return bills + invs;
+}
+// Limite usado: tudo o que ainda não foi pago no cartão.
+export const cardUsed = (card) => cardInvoiceKeys(card).reduce((s, k) => s + invoice(card, k).remaining, 0)
+  + linkedBills(card).filter((b) => !b.paid).reduce((s, b) => s + b.amount, 0);
 
 export function payInvoice(inv, { date, amount, source }) {
   const accId = source?.startsWith('a:') ? source.slice(2) : null;
@@ -292,6 +339,8 @@ export function deleteBill(b, scope) {
 }
 
 export function payBill(b, { date, amount, source }) {
+  // Conta que já faz parte da fatura de um cartão: pagar não cria compra nova nesse cartão.
+  if (b.payWith?.startsWith('c:') && source === b.payWith) source = null;
   const tx = addTx({ type: 'despesa', desc: b.desc, amount, date, categoryId: b.categoryId, source, billId: b.id });
   Object.assign(b, { paid: true, paidDate: date, paidAmount: amount, txId: tx.id });
 }

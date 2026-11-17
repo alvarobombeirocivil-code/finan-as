@@ -824,3 +824,8 @@ a.btn.whats { color: #fff; background: linear-gradient(145deg, #2bd66a, #12a150)
 }
 .app-footer .privacy-link { font-size: 12.5px; color: var(--muted); font-weight: 500; text-decoration: underline; }
 .card-sec p a { color: var(--blue-2); }
+.cc-late, .cc-future { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.cc .cc-late { color: #ff8f99; font-weight: 600; }
+.cc-late .ic { width: 15px; height: 15px; }
+.inv-total > span:first-of-type { font-size: 13px; }
+@media (min-width: 1024px) { .sheet .list { grid-template-columns: 1fr; } }

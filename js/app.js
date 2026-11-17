@@ -353,11 +353,13 @@ function dueClass(p) {
 
 function payRow(p) {
   const cat = p.kind === 'bill' ? S.byId('categories', p.categoryId) : null;
+  const linked = p.kind === 'bill' && p.bill.payWith?.startsWith('c:') ? S.byId('cards', p.bill.payWith.slice(2)) : null;
   const sub = [
     dueText(p),
     p.installment && `${p.installment.n}/${p.installment.total}`,
     p.recur === 'mensal' && 'Mensal',
     p.kind === 'fatura' && p.open && 'Fatura aberta',
+    linked && esc(linked.name),
     cat && esc(cat.name),
   ].filter(Boolean).join(' · ');
   return `
@@ -603,15 +605,21 @@ function viewContas() {
       </div>`;
   }).join('');
   const cardTiles = d.cards.map((c) => {
-    const inv = S.invoice(c, S.invoiceKeyFor(c, today));
+    const key = S.invoiceKeyFor(c, today);
+    const st = S.cardStatement(c, key);
+    const future = S.cardFuture(c, key);
+    const late = S.payables().filter((p) => !p.paid && p.due < today
+      && ((p.kind === 'fatura' && p.inv.card.id === c.id) || (p.kind === 'bill' && p.bill.payWith === `c:${c.id}`)));
     const used = S.cardUsed(c);
     const pct = c.limit ? Math.min(100, Math.round((used / c.limit) * 100)) : 0;
     return `
       <button class="cc" data-act="open-card" data-id="${c.id}">
         <div class="cc-top"><span>${esc(c.name)}</span>${icon('card')}</div>
-        <small>Fatura atual (aberta)</small>
-        <b class="cc-amt">${money(inv.remaining)}</b>
-        <div class="cc-foot"><span>Fecha ${fmtShort(inv.close)}</span><span>Vence ${fmtShort(inv.due)}</span></div>
+        <small>Fatura de ${monthName(key)} · ${st.count} lançamento${st.count === 1 ? '' : 's'}</small>
+        <b class="cc-amt">${money(st.grandPending)}</b>
+        <div class="cc-foot"><span>Fecha ${fmtShort(st.close)}</span><span>Vence ${fmtShort(st.due)}</span></div>
+        ${late.length ? `<small class="cc-late">${icon('alert')}Em atraso: ${money(sumOf(late))}</small>` : ''}
+        ${future ? `<small class="cc-future">Próximas faturas: ${money(future)}</small>` : ''}
         ${c.limit ? `<div class="bar"><i style="width:${pct}%"></i></div><small>Disponível ${money(c.limit - used)} de ${money(c.limit)}</small>` : ''}
       </button>`;
   }).join('');
@@ -691,7 +699,7 @@ function viewConfig() {
       <h2>${icon('alert')}Zona de perigo</h2>
       <button class="btn danger" data-act="wipe">${icon('trash')}Apagar todos os dados</button>
     </section>
-    <p class="ver">AVR Finanças v1.6 · dados salvos apenas neste aparelho</p>`;
+    <p class="ver">AVR Finanças v1.7 · dados salvos apenas neste aparelho</p>`;
 }
 
 // ================= Bottom sheets (janelas que sobem de baixo) =================
@@ -1096,22 +1104,26 @@ function findPayable(id) { return S.payables().find((p) => p.id === id); }
 
 function openPaySheet(p) {
   const d = S.D(), isFat = p.kind === 'fatura';
+  // Conta ligada a um cartão já faz parte da fatura dele: o pagamento sai de uma conta, não do cartão.
+  const linkedCard = !isFat && p.bill.payWith?.startsWith('c:') ? S.byId('cards', p.bill.payWith.slice(2)) : null;
+  const fromAccount = isFat || !!linkedCard;
   const w = openSheet(`
     ${sheetHead(isFat ? 'Pagar fatura' : 'Pagar conta')}
     <p class="pay-desc"><b>${esc(p.desc)}</b> · vence ${fmtDate(p.due)}</p>
+    ${linkedCard ? `<p class="hint">Esta conta faz parte da fatura do cartão ${esc(linkedCard.name)}.</p>` : ''}
     <form class="form" novalidate>
       <div class="grid2">
         <label class="field"><span>Valor pago</span><input name="amount" class="money" inputmode="numeric"></label>
         <label class="field"><span>Data do pagamento</span><input name="date" type="date"></label>
       </div>
-      <label class="field"><span>${isFat ? 'Debitar da conta' : 'Pagar com'}</span><select name="source">${sourceOptions(!isFat)}</select></label>
+      <label class="field"><span>${fromAccount ? 'Debitar da conta' : 'Pagar com'}</span><select name="source">${sourceOptions(!fromAccount)}</select></label>
       <button type="submit" class="btn primary">${icon('check')}Confirmar pagamento</button>
     </form>`);
   const form = $('form', w), el = form.elements;
   initMoney(el.amount);
   setMoney(el.amount, p.amount);
   el.date.value = todayStr();
-  el.source.value = (isFat ? p.inv.card.payAccount : p.bill.payWith) || d.settings.lastAccount || '';
+  el.source.value = (isFat ? p.inv.card.payAccount : linkedCard ? (linkedCard.payAccount || d.settings.lastAccount) : p.bill.payWith) || d.settings.lastAccount || '';
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const amount = getMoney(el.amount);
@@ -1192,11 +1204,13 @@ function openInvoice(cardId, key) {
   const draw = () => {
     const c = S.byId('cards', cardId);
     if (!c) return closeSheet();
-    const inv = S.invoice(c, k), today = todayStr();
-    const status = inv.total === 0 ? 'Sem compras'
-      : inv.isPaid ? 'Paga'
-      : today < inv.close ? 'Aberta'
-      : today > inv.due ? 'Vencida' : 'Fechada';
+    const st = S.cardStatement(c, k), inv = st, today = todayStr();
+    const status = st.count === 0 ? 'Sem lançamentos'
+      : st.grandPending === 0 ? 'Paga'
+      : today < st.close ? 'Aberta'
+      : today > st.due ? 'Vencida' : 'Fechada';
+    const pays = S.payables();
+    const billRows = st.bills.map((b) => pays.find((p) => p.id === b.id)).filter(Boolean).map(payRow).join('');
     body.innerHTML = `
       ${sheetHead(`Fatura · ${esc(c.name)}`)}
       <div class="month-nav">
@@ -1206,14 +1220,18 @@ function openInvoice(cardId, key) {
       </div>
       <div class="inv-total">
         <small class="tag ${status === 'Vencida' ? 'overdue' : status === 'Paga' ? 'paid' : ''}">${status}</small>
-        <b>${money(inv.total)}</b>
-        <span>Fecha ${fmtDate(inv.close)} · Vence ${fmtDate(inv.due)}</span>
-        ${inv.paid ? `<span>Pago ${money(inv.paid)}${inv.remaining ? ` · falta ${money(inv.remaining)}` : ''}</span>` : ''}
+        <span>A pagar</span>
+        <b>${money(st.grandPending)}</b>
+        <span>Total da fatura ${money(st.grandTotal)}${st.grandPaid ? ` · pago ${money(st.grandPaid)}` : ''}</span>
+        <span>Fecha ${fmtDate(st.close)} · Vence ${fmtDate(st.due)}</span>
       </div>
-      ${inv.items.length ? `<div class="list">${inv.items.map(txRow).join('')}</div>` : emptyState('card', 'Nenhuma compra nesta fatura.')}
+      ${st.bills.length ? `<h3 class="day-h">Contas deste cartão (${st.bills.length})</h3><div class="list">${billRows}</div>` : ''}
+      ${st.items.length ? `<h3 class="day-h">Compras lançadas no cartão (${st.items.length})</h3><div class="list">${st.items.map(txRow).join('')}</div>` : ''}
+      ${!st.count ? emptyState('card', 'Nenhum lançamento nesta fatura.') : ''}
       <div class="btn-col mt">
-        ${inv.remaining > 0 ? `<button class="btn primary" data-x="pay">${icon('check')}Pagar fatura (${money(inv.remaining)})</button>` : ''}
+        ${inv.remaining > 0 ? `<button class="btn primary" data-x="pay">${icon('check')}${st.bills.length ? 'Pagar compras lançadas no cartão' : 'Pagar fatura'} (${money(inv.remaining)})</button>` : ''}
         ${inv.payments.length ? '<button class="btn ghost" data-x="unpay">Desfazer pagamento</button>' : ''}
+        ${st.bills.some((b) => !b.paid) ? '<p class="hint-muted">As contas deste cartão são pagas uma a uma pelo ✓, como na aba Pagar.</p>' : ''}
         <button class="btn ghost" data-x="gcal">${icon('calendar')}Lembrar vencimento no Google Agenda</button>
         <button class="btn ghost" data-x="edit">${icon('edit')}Editar cartão</button>
       </div>`;
